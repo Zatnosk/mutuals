@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Mutuals</title>
+	<style>
+		ol {
+			display: grid;
+			grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+		}
+		ol .domain {
+			grid-column: 1 / 5;
+			width: 100%;
+			border-top: 2px solid black;
+			border-bottom: 1px solid #ccc;
+		}
+		li {
+			margin: .5rem;
+		}
+		li img {
+			width: 2rem;
+			height: 2rem;
+			float: left;
+		}
+		.timestamp {
+			display: inline-block;
+			padding: .2em;
+		}
+		.red {
+			background-color: red;
+		}
+		.orange {
+			background-color: orange;
+		}
+		.yellow {
+			background-color: yellow;
+		}
+		.green {
+			background-color: green;
+		}
+		.blue {
+			background-color: lightblue;
+		}
+		.moved:not(:empty):before {
+			content: "(moved to ";
+		}
+		.moved:not(:empty):after {
+			content: ")";
+		}
+	</style>
+	<script src="tiny-template/TinyTemplate.js"></script>
+	<script src="libodon.js"></script>
+	<script>
+	let MutualsApp = undefined
+
+	function connect(){
+		const input = document.querySelector('#address')
+		if(!input) return error("Can't find input field")
+		const server_url = 'https://'+input.value
+
+		const code_input = document.querySelector('#code_input')
+		const code = document.querySelector('#code').value
+		if(!code){
+			MutualsApp = app = new Libodon('FindMutuals','urn:ietf:wg:oauth:2.0:oob',['read'])
+			app.use_actionlog()
+			app.use_errorlog()
+		} else {
+			code_input.style.display='none'
+			document.querySelector('#code').value = ''
+		}
+		const connection = app.connect(server_url, code || undefined)
+		connection.then(conn=>{
+			if(conn.result == 'redirect') {
+				window.open(conn.target,'_blank')
+				code_input.style.display='block'
+			} else if(conn.result == 'success'){
+				load_mutuals()
+			}
+		})
+	}
+
+	const followers = []
+	const following = []
+	const mutuals = []
+
+	function load_mutuals(){
+		if(typeof MutualsApp == 'undefined') return
+		document.querySelector('#initial_input').disabled=true
+		const app = MutualsApp
+		let my_id = undefined
+		app.account_self()
+		.then(self=>{
+			show_fetching_followers(self.body)
+			show_fetching_following(self.body)
+			return Promise.all([
+				app.followers(self.body.id).then(handle_follower_page),
+				app.following(self.body.id).then(handle_following_page)
+			])
+		})
+		.then(detect_mutuals)
+		.then(display_mutuals)
+	}
+
+	function show_fetching_followers(body){
+		const div = document.querySelector('#fetching_followers')
+		const meter = div.querySelector('meter')
+		meter.setAttribute('max',body.followers_count)
+		meter.setAttribute('value',0)
+		div.style.display=''
+	}
+
+	function show_fetching_following(body){
+		const div = document.querySelector('#fetching_following')
+		const meter = div.querySelector('meter')
+		meter.setAttribute('max',body.following_count)
+		meter.setAttribute('value',0)
+		div.style.display=''
+	}
+
+	function handle_follower_page(page){
+		if(typeof page == 'undefined') return
+		for(let follower of page.body){
+			followers.push(follower.id)
+		}
+		document.querySelector('#fetching_followers meter').setAttribute('value',followers.length)
+		const next = page.next()
+		if(next) return next.then(handle_follower_page)
+	}
+
+	function handle_following_page(page){
+		if(typeof page == 'undefined') return
+		for(let followee of page.body){
+			following.push(followee)
+		}
+		document.querySelector('#fetching_following meter').setAttribute('value',following.length)
+		const next = page.next()
+		if(next) return next.then(handle_following_page)
+	}
+
+	function detect_mutuals(){
+		for(let followee of following){
+			if(followers.includes(followee.id)){
+				mutuals.push(followee)
+			}
+		}
+	}
+
+	function display_mutuals(){
+		const ol = document.querySelector('#mutuals')
+		const ol_bots = document.querySelector('#bots')
+		const ol_moved = document.querySelector('#moved')
+		const domain_counts = {}
+		for(let mutual of mutuals){
+			const domain = (mutual.acct.split('@')||['',''])[1]
+			if(!domain_counts[domain]) domain_counts[domain] = 1
+			else domain_counts[domain] += 1
+		}
+		mutuals.sort((a,b)=>{
+			const a_domain = (a.acct.split('@')||['',''])[1]
+			const b_domain = (b.acct.split('@')||['',''])[1]
+			if(domain_counts[a_domain] < domain_counts[b_domain]) return 1
+			else if(domain_counts[a_domain] > domain_counts[b_domain]) return -1
+			else if(a_domain < b_domain) return -1
+			else if(a_domain > b_domain) return 1
+			else if(a.last_status_at && !b.last_status_at) return -1
+			else if(!a.last_status_at && b.last_status_at) return 1
+			else if(a.last_status_at < b.last_status_at) return 1
+			else if(a.last_status_at > b.last_status_at) return -1
+			const a_acct = a.acct.toLowerCase()
+			const b_acct = b.acct.toLowerCase()
+			if(a_acct < b_acct) return -1
+			else if(a_acct > b_acct) return 1
+			return 0
+		})
+		let group_domain = undefined
+		let group_header = undefined
+		let group_count = 0
+		for(let mutual of mutuals){
+			const domain = (mutual.acct.split('@')||['',''])[1]
+			if(group_domain != domain){
+				group_domain = domain
+				if(group_count >= 12){
+					group_header = undefined
+					group_count = 0
+				} else if(typeof group_header != 'undefined') {
+					group_header.innerHTML += '<br>'+domain + ' ('+domain_counts[domain]+')'
+				}
+			}
+			if(typeof group_header == 'undefined'){
+				const div = document.createElement('div')
+				div.classList.add('domain')
+				div.textContent = domain + ' ('+domain_counts[domain]+')'
+				ol.appendChild(div)
+				group_header = div
+			}
+			if(!mutual.last_status_at){
+				mutual.last_status_class = 'red'
+			} else if(mutual.last_status_at < '2020-01-01'){
+				mutual.last_status_class = 'orange'
+			} else if(mutual.last_status_at < '2020-06-01'){
+				mutual.last_status_class = 'yellow'
+			} else if(mutual.last_status_at < '2020-10-01'){
+				mutual.last_status_class = 'green'
+			} else {
+				mutual.last_status_class = 'blue'
+			}
+			
+			const elem = TinyTemplate.activate('account',mutual,undefined,true)
+			if(mutual.bot){
+				ol_bots.appendChild(elem)
+			} else if(mutual.moved){
+				ol_moved.appendChild(elem)
+			} else {
+				ol.appendChild(elem)
+				group_count += 1
+			}
+		}
+	}
+	</script>
+</head>
+<body>
+<p>Enter the instance of your mastodon(-API-compatible) account and I'll give you a list of mutuals.</p>
+<label style="display:block;">Instance:<input type="text" id="address"></label>
+<label id=code_input style="display:none;">Code:<input type="text" id="code"></label>
+<button onclick="connect()" id=initial_input>Find mutuals</button>
+<div id=fetching_followers style="display:none;">
+	<label>Fetching followers: <meter max=1 value=0></label>
+</div>
+<div id=fetching_following style="display:none;">
+	<label>Fetching following: <meter max=1 value=0></label>
+</div>
+<h1>Mutuals</h1>
+<ol id="mutuals">
+</ol>
+<h2>Moved</h2>
+<ol id="moved">
+</ol>
+<h2>Bots</h2>
+<ol id="bots">
+</ol>
+<template data-tmpl-name=account>
+	<li>
+		<img data-tmpl="src:avatar_static">
+		<div data-tmpl="content:acct"></div>
+		<div data-tmpl="content:display_name"></div>
+		<div data-tmpl="content:last_status_at,class:last_status_class" class=timestamp data-tmpl-class-prefix=timestamp></div>
+		<div data-tmpl="content:moved.acct" class=moved></div>
+	</li>
+</template>
+</body>
+</html>
